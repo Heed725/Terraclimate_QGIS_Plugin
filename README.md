@@ -16,7 +16,7 @@ It connects to the **TerraClimate THREDDS server**, extracts a bounding-box subs
 ## 📦 Installation
 
 1. Download the latest release ZIP:  
-   [TerraClimateDownloader.zip](https://github.com/yourusername/TerraClimateDownloader/releases)
+   [TerraClimateDownloader.zip](https://github.com/Heed725/Terraclimate_QGIS_Plugin/blob/main/TerraClimateDownloader-0.0.2.zip)
 
 2. In QGIS:  
    - Go to **Plugins → Manage and Install Plugins → Install from ZIP**  
