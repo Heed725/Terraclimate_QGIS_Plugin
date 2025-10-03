@@ -46,7 +46,7 @@ Optional (recommended for performance):
 On **Windows (OSGeo4W Shell / QGIS Python env):**
 ```bash
 python -m pip install --upgrade pip
-python -m pip install xarray rioxarray numpy netCDF4 dask
+python -m pip install xarray rioxarray "numpy>=1.24" netCDF4 dask
 ````
 
 On **Linux/macOS:**
