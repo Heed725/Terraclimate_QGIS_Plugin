@@ -70,6 +70,11 @@ pip3 install --user xarray rioxarray numpy netCDF4 dask
 4. Click **Run** → A clipped GeoTIFF is downloaded, processed, and added to the map.
 
 ---
+## Video Tutorial
+
+https://youtu.be/IqF5fW00lWU?si=TjLjWCiLSusx5QcQ
+
+---
 
 ## 📖 Data Source
 
