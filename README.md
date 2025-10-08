@@ -1,4 +1,4 @@
-# TerraClimateDownloader QGIS Plugin
+# TerraClimateDownloader QGIS Plugin ![Version](https://img.shields.io/badge/version-0.0.2-green?style=flat-square&logo=qgis)
 
 ## 🌍 Overview
 **TerraClimateDownloader** is a QGIS plugin that allows you to directly download and clip **TerraClimate** datasets (monthly climate & water balance variables, 1958–2024) via **OPeNDAP**.  
