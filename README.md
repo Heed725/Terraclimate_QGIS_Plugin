@@ -121,7 +121,7 @@ For multiband outputs, min/max is calculated across all bands so colors remain c
 
 ## 🎬 Video Tutorial
 
-[![Video Tutorial](https://img.shields.io/badge/YouTube-Tutorial-red?style=flat-square&logo=youtube)](https://youtu.be/IqF5fW00lWU?si=TjLjWCiLSusx5QcQ)
+[![Video Tutorial](https://img.shields.io/badge/YouTube-Tutorial-red?style=flat-square&logo=youtube)](https://www.youtube.com/watch?v=7HS9bGgdKd0)
 
 ---
 
