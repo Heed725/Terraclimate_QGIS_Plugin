@@ -8,6 +8,7 @@ import os
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QColor, QIcon
 from qgis.core import (
+    Qgis,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -27,6 +28,29 @@ from qgis.core import (
 )
 
 import processing
+
+
+try:
+    PROCESSING_NUMBER_INTEGER = QgsProcessingParameterNumber.Type.Integer
+except AttributeError:
+    PROCESSING_NUMBER_INTEGER = getattr(QgsProcessingParameterNumber, "Integer")
+
+try:
+    RASTER_STAT_MIN = QgsRasterBandStats.Stats.Min
+    RASTER_STAT_MAX = QgsRasterBandStats.Stats.Max
+except AttributeError:
+    RASTER_STAT_MIN = getattr(QgsRasterBandStats, "Min")
+    RASTER_STAT_MAX = getattr(QgsRasterBandStats, "Max")
+
+try:
+    SHADER_INTERPOLATED = QgsColorRampShader.Type.Interpolated
+except AttributeError:
+    SHADER_INTERPOLATED = getattr(QgsColorRampShader, "Interpolated")
+
+try:
+    SHADER_CONTINUOUS = QgsColorRampShader.ClassificationMode.Continuous
+except AttributeError:
+    SHADER_CONTINUOUS = getattr(QgsColorRampShader, "Continuous")
 
 
 class SplitRasterBands(QgsProcessingAlgorithm):
@@ -97,7 +121,7 @@ class SplitRasterBands(QgsProcessingAlgorithm):
                 for band_num in range(1, band_count + 1):
                     stats = provider.bandStatistics(
                         band_num,
-                        QgsRasterBandStats.Min | QgsRasterBandStats.Max,
+                        RASTER_STAT_MIN | RASTER_STAT_MAX,
                         raster_layer.extent(),
                         0,
                     )
@@ -110,7 +134,7 @@ class SplitRasterBands(QgsProcessingAlgorithm):
             else:
                 stats = provider.bandStatistics(
                     1,
-                    QgsRasterBandStats.Min | QgsRasterBandStats.Max,
+                    RASTER_STAT_MIN | RASTER_STAT_MAX,
                     raster_layer.extent(),
                     0,
                 )
@@ -124,10 +148,10 @@ class SplitRasterBands(QgsProcessingAlgorithm):
 
             shader = QgsRasterShader()
             color_ramp = QgsColorRampShader()
-            color_ramp.setColorRampType(QgsColorRampShader.Interpolated)
+            color_ramp.setColorRampType(SHADER_INTERPOLATED)
             color_ramp.setMinimumValue(min_val)
             color_ramp.setMaximumValue(max_val)
-            color_ramp.setClassificationMode(QgsColorRampShader.Continuous)
+            color_ramp.setClassificationMode(SHADER_CONTINUOUS)
             color_ramp.setColorRampItemList([
                 QgsColorRampShader.ColorRampItem(min_val, QColor(68, 1, 84), f"{min_val:.1f}"),
                 QgsColorRampShader.ColorRampItem(min_val + (max_val - min_val) * 0.25, QColor(59, 82, 139), ""),
@@ -172,7 +196,7 @@ class SplitRasterBands(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber(
                 self.START_YEAR,
                 self.tr("Start year (first band = January of this year)"),
-                type=QgsProcessingParameterNumber.Integer,
+                type=PROCESSING_NUMBER_INTEGER,
                 defaultValue=2024,
                 minValue=1958,
                 maxValue=2100,

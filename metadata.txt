@@ -31,7 +31,24 @@ repository=https://github.com/Heed725/Terraclimate_QGIS_Plugin/
 tracker=https://github.com/Heed725/Terraclimate_QGIS_Plugin/issues
 
 changelog=
-    0.0.8 - QGIS Compatibility & NumPy Stability Fix:
+    0.0.8 - QGIS 3/4, Qt5/Qt6 & NumPy Compatibility Update:
+    - Bandit security analysis completed: resolved all 17 reported findings
+    - Replaced silent try/except/pass blocks with explicit warning or debug logging
+    - Replaced Python subprocess.Popen calls with Qt QProcess execution
+    - Process executables are now resolved to validated absolute paths before launch
+    - Dependency commands use fixed argument lists and safely generated private installer scripts
+    - Reduced broad exception handling around geometry, raster metadata, dataset close, and temporary-file cleanup
+    - Qt6 compatibility rechecked on: Jul 24, 2026, 09:19 PM GMT+3
+    - Fixed all 27 issues reported by the Qt6 compatibility checker
+    - Added QgsProcessing.SourceType.TypeVectorPolygon with a QGIS 3.16 fallback
+    - Added QgsProcessingParameterNumber.Type.Integer and Type.Double scoped enums
+    - Added QgsRasterBandStats.Stats.Min and Stats.Max scoped enums
+    - Added QgsColorRampShader.Type.Interpolated and ClassificationMode.Continuous scoped enums
+    - Added QMessageBox.StandardButton.Yes and StandardButton.No scoped enums
+    - Added Qgis.MessageLevel.Warning scoped enum
+    - Replaced the deprecated Qt5 dialog exec_() API with exec(), retaining a QGIS 3 fallback
+    - Moved QAction handling to a Qt5/Qt6-compatible runtime import
+    - Retained QGIS 3.16 support through safe string-based fallbacks
     - Set minimum supported QGIS version to 3.16
     - Set maximum supported QGIS version to 4.99
     - Prevented incompatible NumPy 2.x installations by requiring numpy>=1.24,<2

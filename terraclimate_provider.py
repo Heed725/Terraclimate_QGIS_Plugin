@@ -4,15 +4,18 @@ TerraClimate Provider - Processing provider and plugin management
 Version 0.0.8
 """
 import importlib
+import logging
 import os
 import platform
-import subprocess
+import shlex
+import shutil
 import sys
+import tempfile
 
-from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt import QtGui, QtWidgets
+from qgis.PyQt.QtCore import QCoreApplication, QProcess
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import (
-    QAction,
     QApplication,
     QDialog,
     QHBoxLayout,
@@ -24,6 +27,72 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
 )
 from qgis.core import Qgis, QgsApplication, QgsProcessingProvider
+
+# QAction moved from QtWidgets in Qt5 to QtGui in Qt6. Resolve it at runtime
+# so the same plugin package works with both QGIS 3/Qt5 and QGIS 4/Qt6.
+QAction = getattr(QtGui, "QAction", None)
+if QAction is None:
+    QAction = getattr(QtWidgets, "QAction")
+
+# Prefer Qt6/QGIS 4 scoped enums, with string-based fallbacks for
+# QGIS 3.16/PyQt5 where the older class-level aliases are exposed.
+try:
+    MESSAGEBOX_YES = QMessageBox.StandardButton.Yes
+    MESSAGEBOX_NO = QMessageBox.StandardButton.No
+except AttributeError:
+    MESSAGEBOX_YES = getattr(QMessageBox, "Yes")
+    MESSAGEBOX_NO = getattr(QMessageBox, "No")
+
+try:
+    QGIS_WARNING = Qgis.MessageLevel.Warning
+except AttributeError:
+    QGIS_WARNING = getattr(Qgis, "Warning")
+
+try:
+    QPROCESS_MERGED_CHANNELS = QProcess.ProcessChannelMode.MergedChannels
+    QPROCESS_NOT_RUNNING = QProcess.ProcessState.NotRunning
+except AttributeError:
+    QPROCESS_MERGED_CHANNELS = getattr(QProcess, "MergedChannels")
+    QPROCESS_NOT_RUNNING = getattr(QProcess, "NotRunning")
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _find_executable(program):
+    """Return an absolute executable path or None.
+
+    Only existing absolute paths and executables found through the current PATH
+    are accepted. This avoids partial-path process execution.
+    """
+    if not program:
+        return None
+    candidate = os.path.realpath(os.path.expanduser(str(program)))
+    if os.path.isabs(candidate) and os.path.isfile(candidate):
+        return candidate
+    located = shutil.which(str(program))
+    return os.path.realpath(located) if located else None
+
+
+def _start_detached(program, arguments):
+    """Start a detached process using an absolute, validated executable path."""
+    executable = _find_executable(program)
+    if not executable:
+        raise FileNotFoundError(f"Executable not found: {program}")
+
+    clean_arguments = [str(argument) for argument in arguments]
+    result = QProcess.startDetached(executable, clean_arguments)
+    started = result[0] if isinstance(result, tuple) else bool(result)
+    if not started:
+        raise RuntimeError(f"Could not start executable: {executable}")
+    return executable
+
+
+def _safe_batch_value(value):
+    """Validate and escape a value before embedding it in a generated batch file."""
+    text = str(value)
+    if any(character in text for character in ('\r', '\n', '"')):
+        raise ValueError("Unsafe character in Windows batch value")
+    return text.replace('%', '%%')
 
 PLUGIN_PROVIDER_ID = "terraclimate_downloader"
 PLUGIN_VERSION = "0.0.8"
@@ -168,15 +237,15 @@ def _resolve_short_path(path):
         result = ctypes.windll.kernel32.GetLongPathNameW(path, buf, 512)
         if result > 0:
             return buf.value
-    except Exception:
-        pass
+    except (AttributeError, OSError, ValueError) as exc:
+        LOGGER.debug("Windows long-path resolution failed for %s: %s", path, exc)
     # Second attempt: os.path.realpath (works on Python 3.10+ on Windows)
     try:
         resolved = os.path.realpath(path)
         if resolved != path:
             return resolved
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as exc:
+        LOGGER.debug("Real-path resolution failed for %s: %s", path, exc)
     return path
 
 
@@ -229,10 +298,10 @@ def get_osgeo4w_shell_path():
                         install_path, _ = winreg.QueryValueEx(key, "InstallPath")
                         if install_path:
                             candidates.append(os.path.join(install_path, "OSGeo4W.bat"))
-                except (FileNotFoundError, OSError):
-                    pass
-    except ImportError:
-        pass
+                except (FileNotFoundError, OSError) as exc:
+                    LOGGER.debug("QGIS registry key unavailable (%s): %s", key_path, exc)
+    except ImportError as exc:
+        LOGGER.debug("Windows registry module unavailable: %s", exc)
 
     # --- 4. Start Menu shortcut folders ---
     # QGIS standalone installer puts shortcuts under ProgramData Start Menu
@@ -263,8 +332,8 @@ def get_osgeo4w_shell_path():
                                os.environ.get("ProgramFiles(x86)", "")):
                         if pf:
                             candidates.append(os.path.join(pf, entry, "OSGeo4W.bat"))
-        except OSError:
-            pass
+        except OSError as exc:
+            LOGGER.debug("Could not inspect Start Menu directory %s: %s", sm_base, exc)
 
     # --- 5. Common default install directories ---
     program_dirs = [
@@ -281,8 +350,8 @@ def get_osgeo4w_shell_path():
             for entry in os.listdir(pdir):
                 if entry.upper().startswith("QGIS"):
                     candidates.append(os.path.join(pdir, entry, "OSGeo4W.bat"))
-        except OSError:
-            pass
+        except OSError as exc:
+            LOGGER.debug("Could not inspect program directory %s: %s", pdir, exc)
 
     # --- Return the first candidate that actually exists ---
     seen = set()
@@ -320,8 +389,8 @@ def _read_lnk_target(lnk_path):
             candidate = content[idx:end].decode("ascii", errors="ignore")
             if candidate.lower().endswith(".bat"):
                 return candidate
-    except Exception:
-        pass
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        LOGGER.debug("Could not read shortcut target from %s: %s", lnk_path, exc)
     return None
 
 
@@ -483,8 +552,8 @@ class DependencyInstallerDialog(QDialog):
         """Install dependencies using the appropriate method for the current OS.
 
         - Windows: Opens an OSGeo4W shell (or falls back to cmd.exe).
-        - macOS / Linux: Runs pip directly via subprocess in the background,
-          streaming output to the log panel; or opens Terminal.app / xterm
+        - macOS / Linux: Runs pip through Qt QProcess while streaming
+          output to the log panel; or opens Terminal.app / xterm
           if the in-process approach fails.
         """
         self.log("")
@@ -546,153 +615,164 @@ class DependencyInstallerDialog(QDialog):
             self._run_bat_installer(o4w_env_bat)
             return
 
-        # Try OSGeo4W.bat as fallback
+        # Try OSGeo4W.bat as fallback. The discovered path is validated,
+        # written into a private generated batch file, and launched through an
+        # absolute cmd.exe path using Qt's QProcess API.
         shell_path = get_osgeo4w_shell_path()
         if shell_path:
             shell_path = os.path.normpath(shell_path)
             self.log(f"Found OSGeo4W shell: {shell_path}")
-            launch_command = f'call "{shell_path}" && {DISPLAY_INSTALL_COMMAND}'
-            self.log(f"Shell command: {launch_command}")
+            self._run_bat_installer(shell_path, initialize_py3=False)
+            return
 
-            try:
-                creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                subprocess.Popen(
-                    ["cmd.exe", "/k", launch_command],
-                    creationflags=creation_flags,
-                )
-                self.log("OSGeo4W shell opened. Complete the install in that window, then restart QGIS.")
-                QMessageBox.information(
-                    self,
-                    "OSGeo4W Shell Opened",
-                    "An OSGeo4W shell has been opened and the dependency\n"
-                    "install command was started there.\n\n"
-                    "After installation finishes in that shell, restart QGIS.",
-                )
-                return
-            except Exception as exc:
-                self.log(f"FAILED Could not open OSGeo4W shell: {exc}")
-
-        # Final fallback: cmd.exe with pip
+        # Final fallback: run the same fixed installer command without an
+        # OSGeo4W environment batch file.
         self._fallback_windows_pip()
 
-    def _run_bat_installer(self, o4w_env_path):
-        """Generate and run a .bat file that sets up the OSGeo4W environment
-        and installs dependencies. Works for any QGIS 3.x version."""
-        import tempfile
+    def _write_windows_installer(self, environment_bat=None, initialize_py3=False):
+        """Create a private Windows installer batch file with fixed arguments."""
+        python_executable = _safe_batch_value(os.path.normpath(sys.executable))
+        package_specs = " ".join(f'"{_safe_batch_value(pkg)}"' for pkg in INSTALL_PACKAGE_SPECS)
 
-        # CRITICAL: normalize all paths to use backslashes only —
-        # cmd.exe cannot handle mixed forward/back slashes
-        o4w_env_path = os.path.normpath(o4w_env_path)
+        setup_lines = []
+        if environment_bat:
+            environment_bat = os.path.normpath(environment_bat)
+            if not os.path.isfile(environment_bat):
+                raise FileNotFoundError(f"Environment batch file not found: {environment_bat}")
+            setup_lines.append(f'call "{_safe_batch_value(environment_bat)}"')
+            if initialize_py3:
+                setup_lines.append('call py3_env')
 
-        packages_str = " ".join(f'"{pkg}"' for pkg in INSTALL_PACKAGE_SPECS)
-
+        setup_block = "\n".join(setup_lines)
         bat_content = f"""@echo off
+setlocal DisableDelayedExpansion
 echo ============================================
 echo  TerraClimateDownloader - Dependency Installer
 echo ============================================
 echo.
-echo Setting up QGIS Python environment...
-call "{o4w_env_path}"
-call py3_env
-echo.
-echo Python executable:
-where python3 2>nul || where python 2>nul
+{setup_block}
+echo QGIS Python executable:
+echo {python_executable}
 echo.
 echo Installing required Python packages...
 echo.
-python3 -m pip install --upgrade pip 2>nul || python -m pip install --upgrade pip
-python3 -m pip install --upgrade-strategy only-if-needed {packages_str} 2>nul || python -m pip install --upgrade-strategy only-if-needed {packages_str}
+"{python_executable}" -m pip install --upgrade-strategy only-if-needed {package_specs}
+set "INSTALL_EXIT=%ERRORLEVEL%"
 echo.
-echo ============================================
-echo  Installation complete! Please restart QGIS.
-echo ============================================
+if not "%INSTALL_EXIT%"=="0" (
+    echo Installation failed with exit code %INSTALL_EXIT%.
+) else (
+    echo Installation complete. Please restart QGIS.
+)
 echo.
 pause
+exit /b %INSTALL_EXIT%
 """
+
+        fd, bat_path = tempfile.mkstemp(prefix="terraclimate_install_", suffix=".bat")
         try:
-            # Always write to the system temp directory — avoids permission
-            # issues and path problems with the plugin directory
-            temp_dir = tempfile.gettempdir()
-            bat_path = os.path.normpath(os.path.join(temp_dir, "terraclimate_install_deps.bat"))
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\r\n") as handle:
+                handle.write(bat_content)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                LOGGER.debug("Temporary installer descriptor was already closed")
+            raise
+        return os.path.normpath(bat_path)
 
-            with open(bat_path, "w") as f:
-                f.write(bat_content)
-
-            self.log(f"Generated installer script: {bat_path}")
-            self.log(f"Using o4w_env.bat: {o4w_env_path}")
-
-            creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            subprocess.Popen(
-                ["cmd.exe", "/k", bat_path],
-                creationflags=creation_flags,
-            )
-            self.log("Installer window opened. Complete the install in that window, then restart QGIS.")
+    def _run_bat_installer(self, environment_bat, initialize_py3=True):
+        """Launch a generated dependency installer through validated QProcess paths."""
+        try:
+            bat_path = self._write_windows_installer(environment_bat, initialize_py3)
+            cmd_executable = os.environ.get("COMSPEC") or "cmd.exe"
+            launched_path = _start_detached(cmd_executable, ["/d", "/k", bat_path])
+            self.log(f"Installer script: {bat_path}")
+            self.log(f"Process executable: {launched_path}")
+            self.log("Installer window opened. Complete the install, then restart QGIS.")
             QMessageBox.information(
                 self,
                 "Dependency Installer Opened",
-                "An installer window has been opened that will:\n\n"
+                "A validated installer window has been opened that will:\n\n"
                 "1. Set up the QGIS Python environment\n"
-                "2. Install all required packages\n\n"
+                "2. Install the required packages\n\n"
                 "Wait for it to finish, then restart QGIS.",
             )
-        except Exception as exc:
-            self.log(f"FAILED Could not run bat installer: {exc}")
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.log(f"FAILED Could not run dependency installer: {exc}")
             self._fallback_windows_pip()
 
     def _fallback_windows_pip(self):
-        """Run pip install in a new cmd.exe console window."""
-        pip_command = (
-            f'"{sys.executable}" -m pip install --upgrade-strategy only-if-needed '
-            + " ".join(f'"{pkg}"' for pkg in INSTALL_PACKAGE_SPECS)
-        )
-        self.log(f"Fallback command: {pip_command}")
-
+        """Run a fixed pip installer in a generated batch file."""
         try:
-            creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            subprocess.Popen(
-                ["cmd.exe", "/k", pip_command],
-                creationflags=creation_flags,
-            )
-            self.log("A command prompt was opened with the pip install command.")
+            bat_path = self._write_windows_installer()
+            cmd_executable = os.environ.get("COMSPEC") or "cmd.exe"
+            launched_path = _start_detached(cmd_executable, ["/d", "/k", bat_path])
+            self.log(f"Fallback installer script: {bat_path}")
+            self.log(f"Process executable: {launched_path}")
             QMessageBox.information(
                 self,
                 "Pip Install Started",
-                "Could not locate OSGeo4W environment files, so a regular\n"
-                "command prompt was opened running pip with the QGIS Python.\n\n"
-                f"Command:\n{pip_command}\n\n"
+                "Could not locate OSGeo4W environment files, so a validated\n"
+                "installer was opened using the current QGIS Python.\n\n"
                 "After installation finishes, restart QGIS.",
             )
-        except Exception as exc:
-            self.log(f"FAILED Could not run pip: {exc}")
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.log(f"FAILED Could not run pip installer: {exc}")
             self._show_manual_install_message()
 
     # ---- macOS / Linux installer path ------------------------------------------
 
+    def _pip_arguments(self, include_break_system_packages=True):
+        """Return the fixed pip argument list used by the dependency installer."""
+        arguments = ["-m", "pip", "install"]
+        if include_break_system_packages:
+            arguments.append("--break-system-packages")
+        arguments.extend(["--upgrade-strategy", "only-if-needed"])
+        arguments.extend(INSTALL_PACKAGE_SPECS)
+        return arguments
+
     def _install_unix(self):
-        """macOS / Linux: run pip in-process with live output, or open a terminal."""
-        pip_args = [sys.executable, "-m", "pip", "install", "--break-system-packages", "--upgrade-strategy", "only-if-needed"] + list(INSTALL_PACKAGE_SPECS)
-        self.log(f"Running: {' '.join(pip_args)}")
+        """macOS/Linux: run pip with QProcess and stream its combined output."""
+        python_executable = _find_executable(sys.executable)
+        if not python_executable:
+            self.log(f"QGIS Python executable not found: {sys.executable}")
+            self._show_manual_install_message()
+            return
+
+        pip_arguments = self._pip_arguments(include_break_system_packages=True)
+        self.log(f"Running: {shlex.join([python_executable] + pip_arguments)}")
         self.progress.setVisible(True)
-        self.progress.setRange(0, 0)  # indeterminate
+        self.progress.setRange(0, 0)
         self.install_btn.setEnabled(False)
         QApplication.processEvents()
 
+        process = QProcess(self)
+        process.setProgram(python_executable)
+        process.setArguments(pip_arguments)
+        process.setProcessChannelMode(QPROCESS_MERGED_CHANNELS)
+
         try:
-            proc = subprocess.Popen(
-                pip_args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            for line in proc.stdout:
-                self.log(line.rstrip())
+            process.start()
+            if not process.waitForStarted(10000):
+                raise RuntimeError(process.errorString() or "pip process did not start")
+
+            while process.state() != QPROCESS_NOT_RUNNING:
+                process.waitForReadyRead(100)
+                output = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+                for line in output.splitlines():
+                    self.log(line)
                 QApplication.processEvents()
 
-            proc.wait()
+            remaining = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            for line in remaining.splitlines():
+                self.log(line)
+
+            exit_code = process.exitCode()
             self.progress.setVisible(False)
             self.install_btn.setEnabled(True)
 
-            if proc.returncode == 0:
+            if exit_code == 0:
                 self.log("")
                 self.log("SUCCESS — packages installed.")
                 self.log("Please restart QGIS to activate the new packages.")
@@ -703,67 +783,76 @@ pause
                     "Please restart QGIS to activate them.",
                 )
                 return
-            else:
-                self.log(f"pip exited with return code {proc.returncode}")
-                self.log("Trying terminal fallback...")
-        except Exception as exc:
+
+            self.log(f"pip exited with return code {exit_code}")
+            self.log("Trying terminal fallback...")
+        except (OSError, RuntimeError, ValueError) as exc:
             self.progress.setVisible(False)
             self.install_btn.setEnabled(True)
             self.log(f"In-process pip failed: {exc}")
             self.log("Trying terminal fallback...")
 
-        # Fallback: open a terminal window
         self._fallback_unix_terminal()
 
+    def _write_unix_installer(self):
+        """Create a user-only shell script containing a safely quoted pip command."""
+        python_executable = _find_executable(sys.executable)
+        if not python_executable:
+            raise FileNotFoundError(f"QGIS Python executable not found: {sys.executable}")
+
+        command = shlex.join([python_executable] + self._pip_arguments(True))
+        script_content = (
+            "#!/bin/sh\n"
+            "set -u\n"
+            f"{command}\n"
+            "status=$?\n"
+            "printf '\nInstaller finished with exit code %s. Press Enter to close.\n' \"$status\"\n"
+            "read -r _answer\n"
+            "exit \"$status\"\n"
+        )
+        fd, script_path = tempfile.mkstemp(prefix="terraclimate_install_", suffix=".sh")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(script_content)
+        os.chmod(script_path, 0o700)
+        return script_path
+
     def _fallback_unix_terminal(self):
-        """Open a native terminal (macOS Terminal.app or Linux xterm) with the pip command."""
-        pip_command = get_manual_install_command()
+        """Open a native terminal using validated absolute executable paths."""
         current_platform = platform.system()
-
         try:
+            script_path = self._write_unix_installer()
             if current_platform == "Darwin":
-                # macOS: use osascript to open Terminal.app
-                script = (
-                    f'tell application "Terminal"\n'
-                    f'    activate\n'
-                    f'    do script "{pip_command}"\n'
-                    f'end tell'
-                )
-                subprocess.Popen(["osascript", "-e", script])
-                self.log("Opened Terminal.app with pip install command.")
-                QMessageBox.information(
-                    self,
-                    "Terminal Opened",
-                    "A Terminal window has been opened with the install command.\n\n"
-                    "After installation finishes, restart QGIS.",
-                )
+                open_executable = _find_executable("open")
+                if not open_executable:
+                    raise FileNotFoundError("macOS open executable not found")
+                _start_detached(open_executable, ["-a", "Terminal", script_path])
+                terminal_name = "Terminal.app"
             else:
-                # Linux: try common terminal emulators
-                terminal_opened = False
-                for terminal_cmd in [
-                    ["x-terminal-emulator", "-e", f"bash -c '{pip_command}; echo Done; read'"],
-                    ["gnome-terminal", "--", "bash", "-c", f"{pip_command}; echo Done; read"],
-                    ["xterm", "-hold", "-e", pip_command],
-                    ["konsole", "-e", "bash", "-c", f"{pip_command}; echo Done; read"],
-                ]:
-                    try:
-                        subprocess.Popen(terminal_cmd)
-                        terminal_opened = True
-                        self.log(f"Opened terminal: {terminal_cmd[0]}")
-                        QMessageBox.information(
-                            self,
-                            "Terminal Opened",
-                            "A terminal window has been opened with the install command.\n\n"
-                            "After installation finishes, restart QGIS.",
-                        )
-                        break
-                    except FileNotFoundError:
+                terminal_name = None
+                terminal_candidates = [
+                    ("x-terminal-emulator", ["-e", script_path]),
+                    ("gnome-terminal", ["--", script_path]),
+                    ("xterm", ["-hold", "-e", script_path]),
+                    ("konsole", ["-e", script_path]),
+                ]
+                for program, arguments in terminal_candidates:
+                    executable = _find_executable(program)
+                    if not executable:
                         continue
+                    _start_detached(executable, arguments)
+                    terminal_name = executable
+                    break
+                if terminal_name is None:
+                    raise RuntimeError("No supported terminal emulator found")
 
-                if not terminal_opened:
-                    raise RuntimeError("No supported terminal emulator found.")
-
-        except Exception as exc:
+            self.log(f"Opened terminal using: {terminal_name}")
+            QMessageBox.information(
+                self,
+                "Terminal Opened",
+                "A terminal window has been opened with the validated install command.\n\n"
+                "After installation finishes, restart QGIS.",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
             self.log(f"FAILED Could not open terminal: {exc}")
             self._show_manual_install_message()
 
@@ -870,7 +959,7 @@ class TerraClimateProviderPlugin:
             self.iface.messageBar().pushMessage(
                 "TerraClimate Downloader",
                 "Dependencies need attention. Open Plugins > TerraClimate Downloader > Install Dependencies.",
-                level=Qgis.Warning,
+                level=QGIS_WARNING,
                 duration=10,
             )
 
@@ -912,10 +1001,10 @@ class TerraClimateProviderPlugin:
                 "TerraClimate Downloader needs Python dependencies before it can run.\n\n"
                 + "\n".join(details)
                 + "\n\nWould you like to open the dependency installer?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
+                MESSAGEBOX_YES | MESSAGEBOX_NO,
+                MESSAGEBOX_YES,
             )
-            if reply == QMessageBox.Yes:
+            if reply == MESSAGEBOX_YES:
                 self.show_installer_dialog()
             return
 
@@ -928,14 +1017,17 @@ class TerraClimateProviderPlugin:
             self.iface.messageBar().pushMessage(
                 "TerraClimate Downloader",
                 f"Could not open dialog: {exc}. Try the Processing Toolbox instead.",
-                level=Qgis.Warning,
+                level=QGIS_WARNING,
                 duration=5,
             )
 
     def show_installer_dialog(self):
         """Show the dependency installer dialog."""
         dialog = DependencyInstallerDialog(self.iface.mainWindow())
-        dialog.exec_()
+        try:
+            dialog.exec()
+        except AttributeError:
+            getattr(dialog, "exec_")()
 
         if self.provider:
             QgsApplication.processingRegistry().removeProvider(self.provider)

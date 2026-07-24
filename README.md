@@ -2,6 +2,10 @@
 
 **Version 0.0.8**
 
+**Compatibility:** QGIS 3.16-4.99 with Qt5/Qt6 compatibility updates.  
+**Checked on:** Jul 24, 2026, 09:19 PM GMT+3
+**Qt6 validation:** All 27 reported scoped-enum/API issues were corrected while keeping version 0.0.8.
+
 Download and clip TerraClimate climate data directly in QGIS. Select your area of interest, choose a climate variable, and download either a single year or a multi-year stack.
 
 ## Easy Installation
@@ -114,3 +118,12 @@ Examples:
 ## License
 
 See `LICENSE`.
+
+
+### 0.0.8 Security hardening
+
+- Resolved 17 Bandit findings.
+- Removed silent exception swallowing from processing and installer paths.
+- Replaced `subprocess.Popen` with validated Qt `QProcess` launches.
+- Restricted process execution to absolute executable paths and fixed installer arguments.
+

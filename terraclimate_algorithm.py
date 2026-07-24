@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 TerraClimate Algorithm - Processing algorithm for downloading and clipping TerraClimate data
-Version 0.0.6
+Version 0.0.8
 """
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.core import (
+    Qgis,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingParameterVectorLayer,
@@ -22,13 +23,56 @@ from qgis.core import (
     QgsRasterShader,
     QgsColorRampShader,
     QgsSingleBandPseudoColorRenderer,
-    QgsRasterBandStats
+    QgsRasterBandStats,
+    QgsMessageLog
 )
 import os
 import time
 import tempfile
 
 from .terraclimate_provider import get_incompatible_packages, get_manual_install_command
+
+
+# QGIS 4/Qt6 uses scoped enums. QGIS 3.16 exposes older class-level
+# aliases, so every scoped enum has a string-based fallback for QGIS 3.
+try:
+    PROCESSING_VECTOR_POLYGON = QgsProcessing.SourceType.TypeVectorPolygon
+except AttributeError:
+    PROCESSING_VECTOR_POLYGON = getattr(QgsProcessing, "TypeVectorPolygon")
+
+try:
+    PROCESSING_NUMBER_INTEGER = QgsProcessingParameterNumber.Type.Integer
+    PROCESSING_NUMBER_DOUBLE = QgsProcessingParameterNumber.Type.Double
+except AttributeError:
+    PROCESSING_NUMBER_INTEGER = getattr(QgsProcessingParameterNumber, "Integer")
+    PROCESSING_NUMBER_DOUBLE = getattr(QgsProcessingParameterNumber, "Double")
+
+try:
+    RASTER_STAT_MIN = QgsRasterBandStats.Stats.Min
+    RASTER_STAT_MAX = QgsRasterBandStats.Stats.Max
+except AttributeError:
+    RASTER_STAT_MIN = getattr(QgsRasterBandStats, "Min")
+    RASTER_STAT_MAX = getattr(QgsRasterBandStats, "Max")
+
+try:
+    SHADER_INTERPOLATED = QgsColorRampShader.Type.Interpolated
+except AttributeError:
+    SHADER_INTERPOLATED = getattr(QgsColorRampShader, "Interpolated")
+
+try:
+    SHADER_CONTINUOUS = QgsColorRampShader.ClassificationMode.Continuous
+except AttributeError:
+    SHADER_CONTINUOUS = getattr(QgsColorRampShader, "Continuous")
+
+try:
+    QGIS_WARNING = Qgis.MessageLevel.Warning
+except AttributeError:
+    QGIS_WARNING = getattr(Qgis, "Warning")
+
+
+def _log_nonfatal(message):
+    """Record a recoverable processing warning in the QGIS message log."""
+    QgsMessageLog.logMessage(str(message), "TerraClimate Downloader", level=QGIS_WARNING)
 
 
 class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
@@ -188,7 +232,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterVectorLayer(
             self.INPUT_VECTOR,
             self.tr('Input polygon layer (area of interest)'),
-            [QgsProcessing.TypeVectorPolygon]
+            [PROCESSING_VECTOR_POLYGON]
         ))
         
         # Variable selection
@@ -210,7 +254,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.YEAR,
             self.tr(f'Year ({self.MIN_YEAR}-{self.MAX_YEAR})'),
-            type=QgsProcessingParameterNumber.Integer,
+            type=PROCESSING_NUMBER_INTEGER,
             defaultValue=2024,
             minValue=self.MIN_YEAR,
             maxValue=self.MAX_YEAR
@@ -219,7 +263,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.END_YEAR,
             self.tr(f'End year ({self.MIN_YEAR}-{self.MAX_YEAR}, used for year range mode)'),
-            type=QgsProcessingParameterNumber.Integer,
+            type=PROCESSING_NUMBER_INTEGER,
             defaultValue=2025,
             minValue=self.MIN_YEAR,
             maxValue=self.MAX_YEAR
@@ -229,7 +273,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.TIME_INDEX,
             self.tr('Month (-1 = all months as bands, 1-12 = specific month; ignored in year range mode)'),
-            type=QgsProcessingParameterNumber.Integer,
+            type=PROCESSING_NUMBER_INTEGER,
             defaultValue=-1,
             minValue=-1,
             maxValue=12
@@ -247,7 +291,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.BUFFER_DEG,
             self.tr('Bounding box buffer (degrees)'),
-            type=QgsProcessingParameterNumber.Double,
+            type=PROCESSING_NUMBER_DOUBLE,
             defaultValue=0.1,
             minValue=0.0,
             maxValue=5.0
@@ -257,7 +301,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
         self.addParameter(QgsProcessingParameterNumber(
             self.MAX_RETRIES,
             self.tr('Connection retries'),
-            type=QgsProcessingParameterNumber.Integer,
+            type=PROCESSING_NUMBER_INTEGER,
             defaultValue=3,
             minValue=1,
             maxValue=10
@@ -466,7 +510,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
                 for b in range(1, band_count + 1):
                     stats = provider.bandStatistics(
                         b, 
-                        QgsRasterBandStats.Min | QgsRasterBandStats.Max,
+                        RASTER_STAT_MIN | RASTER_STAT_MAX,
                         rlayer.extent(),
                         0  # Sample size 0 = use all pixels
                     )
@@ -487,7 +531,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
                 # Single band - just get stats for that band
                 stats = provider.bandStatistics(
                     band, 
-                    QgsRasterBandStats.Min | QgsRasterBandStats.Max,
+                    RASTER_STAT_MIN | RASTER_STAT_MAX,
                     rlayer.extent(),
                     0
                 )
@@ -516,7 +560,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
             # Create color ramp shader
             shader = QgsRasterShader()
             color_ramp = QgsColorRampShader()
-            color_ramp.setColorRampType(QgsColorRampShader.Interpolated)
+            color_ramp.setColorRampType(SHADER_INTERPOLATED)
             
             # For classification, we can also set min/max explicitly
             color_ramp.setMinimumValue(min_val)
@@ -527,7 +571,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
             color_ramp.setColorRampItemList(items)
             
             # Classify method - Continuous for smooth gradients
-            color_ramp.setClassificationMode(QgsColorRampShader.Continuous)
+            color_ramp.setClassificationMode(SHADER_CONTINUOUS)
             
             shader.setRasterShaderFunction(color_ramp)
             
@@ -633,8 +677,8 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
             else:
                 da.coords['spatial_ref'].attrs['crs_wkt'] = WGS84_WKT
                 da.coords['spatial_ref'].attrs['spatial_ref'] = WGS84_WKT
-        except Exception:
-            pass
+        except (ImportError, AttributeError, KeyError, TypeError, ValueError) as exc:
+            _log_nonfatal(f"Could not attach optional spatial_ref metadata: {exc}")
         return da
 
     def _prepare_subset(self, da, minx, miny, maxx, maxy, time_index, feedback, stride=1):
@@ -769,7 +813,7 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
                 raise QgsProcessingException('Time index must be -1 (all months) or 1-12 (specific month).')
         
         feedback.pushInfo("=" * 60)
-        feedback.pushInfo(f"TerraClimate Downloader v0.0.6")
+        feedback.pushInfo(f"TerraClimate Downloader v0.0.8")
         feedback.pushInfo("=" * 60)
         feedback.pushInfo(f"Variable: {var_label}")
         feedback.pushInfo(f"Mode: {year_mode_label}")
@@ -818,9 +862,11 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
             
             # Clean geometry
             try:
-                g_wgs = g_wgs.buffer(0, 1)
-            except Exception:
-                pass
+                cleaned_geometry = g_wgs.buffer(0, 1)
+                if cleaned_geometry and not cleaned_geometry.isEmpty():
+                    g_wgs = cleaned_geometry
+            except (RuntimeError, TypeError, ValueError) as exc:
+                feedback.pushInfo(f"  Warning: geometry cleanup was skipped: {exc}")
             
             if extent_wgs is None:
                 extent_wgs = g_wgs.boundingBox()
@@ -912,8 +958,8 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
                 finally:
                     try:
                         ds.close()
-                    except Exception:
-                        pass
+                    except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+                        feedback.pushInfo(f"  Warning: dataset close reported: {exc}")
 
             if not sub_arrays:
                 raise QgsProcessingException('No TerraClimate rasters were prepared for export.')
@@ -927,8 +973,8 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
 
             try:
                 sub = sub.rio.write_nodata(np.float32(-9999.0), inplace=False)
-            except Exception:
-                pass
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                feedback.pushInfo(f"  Warning: could not attach NoData metadata before export: {exc}")
 
             if str(sub.dtype) != 'float32':
                 sub = sub.astype('float32')
@@ -975,8 +1021,8 @@ class TerraClimateClipByYear_GDAL(QgsProcessingAlgorithm):
             if temp_unclipped and os.path.exists(temp_unclipped):
                 try:
                     os.remove(temp_unclipped)
-                except Exception:
-                    pass
+                except OSError as exc:
+                    feedback.pushInfo(f"  Warning: could not remove temporary raster {temp_unclipped}: {exc}")
 
         feedback.pushInfo("Step 6: Adding to map and applying style...")
         name = os.path.basename(out_tif)

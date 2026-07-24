@@ -9,6 +9,7 @@ import os
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import (
+    Qgis,
     QgsProcessing,
     QgsProcessingAlgorithm,
     QgsProcessingException,
@@ -21,6 +22,12 @@ from qgis.core import (
 )
 
 import processing
+
+
+try:
+    PROCESSING_NUMBER_DOUBLE = QgsProcessingParameterNumber.Type.Double
+except AttributeError:
+    PROCESSING_NUMBER_DOUBLE = getattr(QgsProcessingParameterNumber, "Double")
 
 
 class ResampleRasterToReference(QgsProcessingAlgorithm):
@@ -146,7 +153,7 @@ class ResampleRasterToReference(QgsProcessingAlgorithm):
             QgsProcessingParameterNumber(
                 self.NODATA,
                 self.tr("NoData value override (0 = keep original)"),
-                type=QgsProcessingParameterNumber.Double,
+                type=PROCESSING_NUMBER_DOUBLE,
                 defaultValue=0,
                 optional=True,
             )

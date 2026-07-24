@@ -3,7 +3,7 @@
 TerraClimate Downloader - QGIS Plugin
 Download and clip TerraClimate climate data via OPeNDAP
 
-Version: 0.0.4
+Version: 0.0.8
 Author: Hemed Lungo
 """
 
