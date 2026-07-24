@@ -1,0 +1,82 @@
+[general]
+name=TerraClimateDownloader
+qgisMinimumVersion=3.16
+qgisMaximumVersion=4.99
+description=Download, clip, split, and resample TerraClimate climate data via OPeNDAP. Easy installation with automatic dependency setup. Supports 14 climate variables (1958-2025).
+about=Downloads TerraClimate climate data for any region. Simply select a polygon layer as your boundary, choose a climate variable, and pick either a single year or a year range. The plugin downloads only the data you need and clips it to your area of interest.
+
+    Features:
+    - 14 climate variables including temperature, precipitation, evapotranspiration, and more
+    - Data from 1958 to 2025
+    - Automatic dependency installation helper
+    - Downloads only the area you need (efficient OPeNDAP subsetting)
+    - Single month output or multiband rasters for full-year and multi-year downloads
+    - Resample any raster to match a DEM or other reference grid
+
+    First-time setup: Use Plugins menu > TerraClimate Downloader > Install Dependencies to automatically install required Python packages.
+
+    Icon by Fusion5085. TerraClimate dataset by Abatzoglou et al. (2018), Scientific Data.
+
+version=0.0.8
+author=Hemed Lungo
+email=Hemedlungo@gmail.com
+category=Raster
+icon=icon.svg
+experimental=False
+deprecated=False
+tags=climate, terraclimate, downloader, opendap, netcdf, xarray, rioxarray, gdal, processing, temperature, precipitation, evapotranspiration, resample, dem
+
+homepage=https://github.com/Heed725/Terraclimate_QGIS_Plugin/
+repository=https://github.com/Heed725/Terraclimate_QGIS_Plugin/
+tracker=https://github.com/Heed725/Terraclimate_QGIS_Plugin/issues
+
+changelog=
+    0.0.8 - QGIS Compatibility & NumPy Stability Fix:
+    - Set minimum supported QGIS version to 3.16
+    - Set maximum supported QGIS version to 4.99
+    - Prevented incompatible NumPy 2.x installations by requiring numpy>=1.24,<2
+    - Dependency installer now uses --upgrade-strategy only-if-needed to avoid replacing QGIS-bundled packages unnecessarily
+    - Improved dependency checks so broken package imports are caught and reported instead of crashing QGIS
+    - Fixed the Windows user-site NumPy conflict that could cause: AttributeError: 'NoneType' object has no attribute 'write'
+    0.0.7 - Downsampling & DEM Support:
+    - New variable: Elevation / DEM — download the static TerraClimate DEM layer (year & month ignored automatically)
+    - DEM sourced from the THREDDS static layers catalog, with flexible variable name detection
+    - New parameter: Downsampling — server-side pixel striding for large-area downloads (stride 2/4/8/16)
+    - Reduces data transfer by up to 256× for continental-scale requests (e.g. Africa at stride 16: ~170 MB → ~0.05 MB per month)
+    - OPeNDAP-native striding — skipped pixels never leave the server, saving both bandwidth and time
+    - Help panel includes a downsampling guide by area size (district → continent)
+    - Special thanks to Katherine Hegewisch, co-creator of TerraClimate and steward of the THREDDS infrastructure, for sharing the DEM layer link and for the quiet, essential work that keeps open climate science running — with so much love and gratitude
+    0.0.6 - Resample Raster to Reference:
+        - New tool: Resample Raster to Reference — resample any raster to match the resolution, extent, and CRS of a reference raster (e.g. a DEM)
+        - Supports 7 resampling methods (Nearest Neighbour, Bilinear, Cubic, Cubic Spline, Lanczos, Average, Mode)
+        - Preserves all bands, outputs Float32 with LZW compression
+        - Optional NoData override, multithreaded GDAL Warp under the hood
+        - Auto-loads result into the map canvas
+    0.0.5 - Crash Fix & UI Cleanup (thanks to Eduard Kazakov for reporting and diagnosing):
+        - Fixed: QGIS crash (access violation) when downloading data with large bounding box buffer
+        - Root cause: pyproj.CRS.from_user_input() called from QGIS processing thread triggers PROJ database context crash
+        - Solution: replaced rioxarray write_crs() with direct WKT/spatial_ref attribute assignment, bypassing pyproj entirely
+        - Fixed: redundant nested category in Processing Toolbox (TerraClimate Downloader > TerraClimate Downloader)
+        - Algorithms now appear directly under the provider node without duplicate grouping
+    0.0.4 - Universal QGIS 3 Dependency Installer Fix:
+        - Fixed: "not recognized as internal or external command" error on Windows
+        - Fixed: Mixed forward/back slashes in paths that broke cmd.exe execution
+        - All paths now normalized with os.path.normpath() for consistent backslashes
+        - Installer .bat file now writes to system temp directory instead of plugin folder
+        - Dynamically generates .bat installer from sys.executable (works with any QGIS 3.x)
+        - No longer hardcodes QGIS installation paths
+        - Finds o4w_env.bat automatically by walking up from the Python executable
+        - Three-tier fallback: o4w_env.bat → OSGeo4W.bat → direct pip with sys.executable
+        - Uses python3 with python fallback for maximum compatibility across QGIS versions
+    0.0.3 - Easy Installation & Styling Update:
+        - Added automatic dependency installer (Plugins menu > Install Dependencies)
+        - Auto-applies singleband pseudocolor styling with variable-appropriate color ramps
+        - Temperature: blue-white-red | Precipitation: yellow-green-blue
+        - Drought indices: red-white-blue | Soil moisture: brown-teal
+        - Improved error messages with clear installation instructions
+        - Added dependency status indicator in plugin menu
+        - Better cross-platform support (Windows, macOS, Linux)
+        - Extended year range to 2025
+        - Added year range mode with multiband raster output
+    0.0.2 - Initial public release
+    0.0.1 - Development version
